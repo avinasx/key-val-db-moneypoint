@@ -210,12 +210,13 @@ class StorageEngine:
     
     def _recover_from_wal(self) -> None:
         """Recover state from WAL after crash"""
-        operations = self.wal.replay()
-        for op in operations:
-            if op['operation'] == 'put':
-                self.memtable.put(op['key'], op['value'])
-            elif op['operation'] == 'delete':
-                self.memtable.delete(op['key'])
+        with self.lock:
+            operations = self.wal.replay()
+            for op in operations:
+                if op['operation'] == 'put':
+                    self.memtable.put(op['key'], op['value'])
+                elif op['operation'] == 'delete':
+                    self.memtable.delete(op['key'])
     
     def _flush_memtable(self) -> None:
         """Flush memtable to disk as SSTable"""
@@ -235,42 +236,46 @@ class StorageEngine:
             self.memtable.clear()
             self.wal.clear()
             
-            # Trigger compaction if too many SSTables
+            # Trigger compaction if too many SSTables (already holding lock)
             if len(self.sstables) > 10:
-                self._compact_sstables()
+                self._compact_sstables_internal()
+    
+    def _compact_sstables_internal(self) -> None:
+        """Merge and compact SSTables (internal, assumes lock is held)"""
+        if len(self.sstables) < 2:
+            return
+        
+        # Merge all data
+        all_data = {}
+        for sstable in self.sstables:
+            for key in sstable.index.keys():
+                value = sstable.get(key)
+                all_data[key] = value
+        
+        # Create new compacted SSTable
+        timestamp = int(time.time() * 1000000)
+        compacted_path = os.path.join(
+            self.data_dir, f'sstable_{timestamp}_compacted.dat'
+        )
+        
+        new_sstable = SSTable.write(
+            compacted_path,
+            [(k, v) for k, v in all_data.items() if v is not None]
+        )
+        
+        # Remove old SSTables
+        for sstable in self.sstables:
+            try:
+                os.remove(sstable.file_path)
+            except OSError:
+                pass
+        
+        self.sstables = [new_sstable]
     
     def _compact_sstables(self) -> None:
-        """Merge and compact SSTables"""
+        """Merge and compact SSTables (public, acquires lock)"""
         with self.lock:
-            if len(self.sstables) < 2:
-                return
-            
-            # Merge all data
-            all_data = {}
-            for sstable in self.sstables:
-                for key in sstable.index.keys():
-                    value = sstable.get(key)
-                    all_data[key] = value
-            
-            # Create new compacted SSTable
-            timestamp = int(time.time() * 1000000)
-            compacted_path = os.path.join(
-                self.data_dir, f'sstable_{timestamp}_compacted.dat'
-            )
-            
-            new_sstable = SSTable.write(
-                compacted_path,
-                [(k, v) for k, v in all_data.items() if v is not None]
-            )
-            
-            # Remove old SSTables
-            for sstable in self.sstables:
-                try:
-                    os.remove(sstable.file_path)
-                except OSError:
-                    pass
-            
-            self.sstables = [new_sstable]
+            self._compact_sstables_internal()
     
     def put(self, key: str, value: Any) -> None:
         """Insert or update a key-value pair"""

@@ -59,6 +59,8 @@ class KVServer:
     def _handle_client(self, client_socket: socket.socket, address: tuple) -> None:
         """Handle client connection"""
         buffer = ""
+        # Set timeout to prevent hanging on disconnected clients
+        client_socket.settimeout(60.0)
         try:
             while self.running:
                 try:
