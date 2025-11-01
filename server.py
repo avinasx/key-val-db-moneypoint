@@ -97,7 +97,10 @@ class KVDBServer:
                     return {'status': 'error', 'message': 'Missing key or value'}
                 
                 success = self.db.put(key, value)
-                return {'status': 'ok' if success else 'error', 'result': success}
+                if success:
+                    return {'status': 'ok', 'result': success}
+                else:
+                    return {'status': 'error', 'message': 'Failed to put key-value pair', 'result': False}
             
             elif command == 'read':
                 key = request.get('key')
@@ -126,7 +129,10 @@ class KVDBServer:
                     return {'status': 'error', 'message': 'Missing keys or values'}
                 
                 success = self.db.batch_put(keys, values)
-                return {'status': 'ok' if success else 'error', 'result': success}
+                if success:
+                    return {'status': 'ok', 'result': success}
+                else:
+                    return {'status': 'error', 'message': 'Failed to batch put key-value pairs', 'result': False}
             
             elif command == 'delete':
                 key = request.get('key')
@@ -135,7 +141,10 @@ class KVDBServer:
                     return {'status': 'error', 'message': 'Missing key'}
                 
                 success = self.db.delete(key)
-                return {'status': 'ok' if success else 'error', 'result': success}
+                if success:
+                    return {'status': 'ok', 'result': success}
+                else:
+                    return {'status': 'error', 'message': 'Failed to delete key or key not found', 'result': False}
             
             else:
                 return {'status': 'error', 'message': f'Unknown command: {command}'}

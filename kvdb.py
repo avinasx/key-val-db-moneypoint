@@ -34,6 +34,10 @@ class KeyValueDB:
         # In-memory cache for low-latency reads
         self.cache: Dict[str, Any] = {}
         
+        # Write counter for periodic snapshots
+        self.write_count = 0
+        self.snapshot_interval = 100  # Snapshot every N writes
+        
         # Lock for thread-safe operations
         self.lock = threading.RLock()
         
@@ -124,9 +128,13 @@ class KeyValueDB:
                 # Update cache
                 self.cache[key] = value
                 
-                # Persist periodically (every 100 operations for performance)
-                if len(self.cache) % 100 == 0:
+                # Increment write counter
+                self.write_count += 1
+                
+                # Persist periodically based on write count
+                if self.write_count >= self.snapshot_interval:
                     self._persist()
+                    self.write_count = 0
                 
                 return True
         except Exception as e:
@@ -195,9 +203,13 @@ class KeyValueDB:
                 for key, value in zip(keys, values):
                     self.cache[key] = value
                 
-                # Persist periodically
-                if len(self.cache) % 100 == 0:
+                # Increment write counter
+                self.write_count += len(keys)
+                
+                # Persist periodically based on write count
+                if self.write_count >= self.snapshot_interval:
                     self._persist()
+                    self.write_count = 0
                 
                 return True
         except Exception as e:
@@ -223,9 +235,13 @@ class KeyValueDB:
                     # Remove from cache
                     del self.cache[key]
                     
-                    # Persist periodically
-                    if len(self.cache) % 100 == 0:
+                    # Increment write counter
+                    self.write_count += 1
+                    
+                    # Persist periodically based on write count
+                    if self.write_count >= self.snapshot_interval:
                         self._persist()
+                        self.write_count = 0
                     
                     return True
                 return False
