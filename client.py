@@ -1,245 +1,223 @@
 """
-Client Library for Key/Value Database
-Provides easy-to-use interface for connecting to the database server
+Client library for Key-Value Database
+Provides a simple interface to interact with the database server.
 """
 
-import socket
 import json
-from typing import Any, List, Optional, Tuple
+import socket
+from typing import Any, Dict, List, Optional
 
 
-class KVClient:
-    """Client for Key/Value Database"""
+class KVDBClient:
+    """
+    Client for the Key-Value database server.
     
-    def __init__(self, host: str = 'localhost', port: int = 9999, timeout: float = 30.0):
+    Example usage:
+        client = KVDBClient('localhost', 9999)
+        client.connect()
+        client.put('key1', 'value1')
+        value = client.read('key1')
+        client.close()
+        
+    Or using context manager:
+        with KVDBClient('localhost', 9999) as client:
+            client.put('key1', 'value1')
+            value = client.read('key1')
+    """
+    
+    def __init__(self, host: str = "localhost", port: int = 9999):
+        """
+        Initialize the client.
+        
+        Args:
+            host: Server host
+            port: Server port
+        """
         self.host = host
         self.port = port
-        self.timeout = timeout
-        self.socket = None
+        self.socket: Optional[socket.socket] = None
         self.buffer = ""
-        
-    def connect(self) -> None:
-        """Connect to the database server"""
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.settimeout(self.timeout)
-        self.socket.connect((self.host, self.port))
     
-    def disconnect(self) -> None:
-        """Disconnect from the database server"""
-        if self.socket:
-            self.socket.close()
-            self.socket = None
-            self.buffer = ""
+    def connect(self):
+        """Connect to the server."""
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.host, self.port))
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to server: {e}")
     
     def _send_request(self, request: dict) -> dict:
-        """Send request and receive response"""
+        """
+        Send a request to the server and receive the response.
+        
+        Args:
+            request: Request dictionary
+            
+        Returns:
+            Response dictionary
+        """
         if not self.socket:
-            raise ConnectionError("Not connected to server. Call connect() first.")
+            raise RuntimeError("Not connected to server. Call connect() first.")
         
-        # Send request
-        message = json.dumps(request) + '\n'
-        self.socket.send(message.encode('utf-8'))
+        try:
+            # Send request
+            message = json.dumps(request) + '\n'
+            self.socket.sendall(message.encode('utf-8'))
+            
+            # Receive response
+            while '\n' not in self.buffer:
+                data = self.socket.recv(4096).decode('utf-8')
+                if not data:
+                    raise ConnectionError("Server closed connection")
+                self.buffer += data
+            
+            # Extract one response
+            response_str, self.buffer = self.buffer.split('\n', 1)
+            response = json.loads(response_str)
+            
+            # Check for errors
+            if response.get('status') == 'error':
+                raise RuntimeError(f"Server error: {response.get('message')}")
+            
+            return response
         
-        # Receive response
-        while '\n' not in self.buffer:
-            data = self.socket.recv(4096).decode('utf-8')
-            if not data:
-                raise ConnectionError("Connection closed by server")
-            self.buffer += data
-        
-        response_str, self.buffer = self.buffer.split('\n', 1)
-        return json.loads(response_str)
+        except Exception as e:
+            raise RuntimeError(f"Communication error: {e}")
     
     def put(self, key: str, value: Any) -> bool:
-        """Store a key-value pair"""
-        request = {
-            'command': 'put',
-            'key': key,
-            'value': value
-        }
+        """
+        Store a key-value pair.
+        
+        Args:
+            key: The key to store
+            value: The value to store
+            
+        Returns:
+            True if successful
+        """
+        request = {'command': 'put', 'key': key, 'value': value}
         response = self._send_request(request)
-        return response.get('status') == 'ok'
+        return response.get('result', False)
     
-    def get(self, key: str) -> Optional[Any]:
-        """Retrieve value for a key"""
-        request = {
-            'command': 'get',
-            'key': key
-        }
+    def read(self, key: str) -> Optional[Any]:
+        """
+        Read a value by key.
+        
+        Args:
+            key: The key to read
+            
+        Returns:
+            The value if found, None otherwise
+        """
+        request = {'command': 'read', 'key': key}
         response = self._send_request(request)
-        if response.get('status') == 'ok':
-            return response.get('value')
-        return None
+        return response.get('result')
     
-    def get_range(self, start_key: str, end_key: str) -> List[Tuple[str, Any]]:
-        """Retrieve all key-value pairs in range [start_key, end_key]"""
-        request = {
-            'command': 'get_range',
-            'start_key': start_key,
-            'end_key': end_key
-        }
+    def read_key_range(self, start_key: str, end_key: str) -> Dict[str, Any]:
+        """
+        Read all key-value pairs in a range (inclusive).
+        
+        Args:
+            start_key: Start of the range
+            end_key: End of the range
+            
+        Returns:
+            Dictionary of key-value pairs in the range
+        """
+        request = {'command': 'read_key_range', 'start_key': start_key, 'end_key': end_key}
         response = self._send_request(request)
-        if response.get('status') == 'ok':
-            return [tuple(item) for item in response.get('data', [])]
-        return []
+        return response.get('result', {})
     
     def batch_put(self, keys: List[str], values: List[Any]) -> bool:
-        """Store multiple key-value pairs in batch"""
-        if len(keys) != len(values):
-            raise ValueError("Keys and values must have the same length")
+        """
+        Store multiple key-value pairs atomically.
         
-        request = {
-            'command': 'batch_put',
-            'keys': keys,
-            'values': values
-        }
+        Args:
+            keys: List of keys
+            values: List of values
+            
+        Returns:
+            True if successful
+        """
+        request = {'command': 'batch_put', 'keys': keys, 'values': values}
         response = self._send_request(request)
-        return response.get('status') == 'ok'
+        return response.get('result', False)
     
     def delete(self, key: str) -> bool:
-        """Delete a key"""
-        request = {
-            'command': 'delete',
-            'key': key
-        }
+        """
+        Delete a key-value pair.
+        
+        Args:
+            key: The key to delete
+            
+        Returns:
+            True if successful
+        """
+        request = {'command': 'delete', 'key': key}
         response = self._send_request(request)
-        return response.get('status') == 'ok'
+        return response.get('result', False)
     
-    def ping(self) -> bool:
-        """Check if server is responsive"""
-        try:
-            request = {'command': 'ping'}
-            response = self._send_request(request)
-            return response.get('status') == 'ok'
-        except Exception:
-            return False
+    def close(self):
+        """Close the connection."""
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
     
     def __enter__(self):
-        """Context manager entry"""
+        """Context manager entry."""
         self.connect()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
-        self.disconnect()
-        return False
+        """Context manager exit."""
+        self.close()
 
 
 def main():
-    """Interactive client CLI"""
+    """Demo script showing client usage."""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Key/Value Database Client')
-    parser.add_argument('--host', default='localhost', help='Server host (default: localhost)')
-    parser.add_argument('--port', type=int, default=9999, help='Server port (default: 9999)')
+    parser = argparse.ArgumentParser(description='Key-Value Database Client')
+    parser.add_argument('--host', default='localhost', help='Server host')
+    parser.add_argument('--port', type=int, default=9999, help='Server port')
     
     args = parser.parse_args()
     
-    print(f"Connecting to {args.host}:{args.port}...")
+    print("Key-Value Database Client")
+    print("=" * 50)
     
-    try:
-        with KVClient(host=args.host, port=args.port) as client:
-            print("Connected! Type 'help' for commands or 'quit' to exit.\n")
-            
-            while True:
-                try:
-                    command = input("> ").strip()
-                    
-                    if not command:
-                        continue
-                    
-                    if command == 'quit' or command == 'exit':
-                        break
-                    
-                    elif command == 'help':
-                        print("""
-Available commands:
-  put <key> <value>          - Store a key-value pair
-  get <key>                  - Retrieve value for a key
-  range <start> <end>        - Get all keys in range [start, end]
-  batch <k1> <v1> <k2> <v2>  - Batch store key-value pairs
-  delete <key>               - Delete a key
-  ping                       - Check server connection
-  quit/exit                  - Exit the client
-                        """)
-                    
-                    elif command == 'ping':
-                        if client.ping():
-                            print("Server is alive!")
-                        else:
-                            print("Server not responding")
-                    
-                    elif command.startswith('put '):
-                        parts = command.split(None, 2)
-                        if len(parts) >= 3:
-                            key, value = parts[1], parts[2]
-                            if client.put(key, value):
-                                print(f"Stored: {key} = {value}")
-                            else:
-                                print("Failed to store")
-                        else:
-                            print("Usage: put <key> <value>")
-                    
-                    elif command.startswith('get '):
-                        parts = command.split(None, 1)
-                        if len(parts) >= 2:
-                            key = parts[1]
-                            value = client.get(key)
-                            if value is not None:
-                                print(f"{key} = {value}")
-                            else:
-                                print(f"Key '{key}' not found")
-                        else:
-                            print("Usage: get <key>")
-                    
-                    elif command.startswith('range '):
-                        parts = command.split(None, 2)
-                        if len(parts) >= 3:
-                            start, end = parts[1], parts[2]
-                            results = client.get_range(start, end)
-                            if results:
-                                for key, value in results:
-                                    print(f"  {key} = {value}")
-                            else:
-                                print("No keys found in range")
-                        else:
-                            print("Usage: range <start_key> <end_key>")
-                    
-                    elif command.startswith('batch '):
-                        parts = command.split()[1:]
-                        if len(parts) >= 2 and len(parts) % 2 == 0:
-                            keys = parts[0::2]
-                            values = parts[1::2]
-                            if client.batch_put(keys, values):
-                                print(f"Batch stored {len(keys)} pairs")
-                            else:
-                                print("Failed to batch store")
-                        else:
-                            print("Usage: batch <k1> <v1> <k2> <v2> ...")
-                    
-                    elif command.startswith('delete '):
-                        parts = command.split(None, 1)
-                        if len(parts) >= 2:
-                            key = parts[1]
-                            if client.delete(key):
-                                print(f"Deleted: {key}")
-                            else:
-                                print("Failed to delete")
-                        else:
-                            print("Usage: delete <key>")
-                    
-                    else:
-                        print(f"Unknown command: {command}. Type 'help' for available commands.")
-                
-                except KeyboardInterrupt:
-                    print("\nUse 'quit' to exit")
-                except Exception as e:
-                    print(f"Error: {e}")
-    
-    except ConnectionRefusedError:
-        print(f"Could not connect to server at {args.host}:{args.port}")
-    except Exception as e:
-        print(f"Error: {e}")
+    with KVDBClient(args.host, args.port) as client:
+        # Demo operations
+        print("\n1. Putting single values...")
+        client.put('name', 'John Doe')
+        client.put('age', 30)
+        client.put('city', 'New York')
+        print("   Done!")
+        
+        print("\n2. Reading single values...")
+        print(f"   name: {client.read('name')}")
+        print(f"   age: {client.read('age')}")
+        print(f"   city: {client.read('city')}")
+        
+        print("\n3. Batch putting values...")
+        keys = ['product1', 'product2', 'product3']
+        values = ['Laptop', 'Mouse', 'Keyboard']
+        client.batch_put(keys, values)
+        print("   Done!")
+        
+        print("\n4. Reading key range...")
+        range_result = client.read_key_range('product1', 'product3')
+        for k, v in range_result.items():
+            print(f"   {k}: {v}")
+        
+        print("\n5. Deleting a key...")
+        client.delete('age')
+        print(f"   age after delete: {client.read('age')}")
+        
+        print("\nDemo completed successfully!")
 
 
 if __name__ == '__main__':
